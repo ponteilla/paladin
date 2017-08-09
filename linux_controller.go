@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -14,11 +15,17 @@ import (
 	"strings"
 )
 
+// UsersGobPath is the path at which to store users.
+const UsersGobPath = "/var/lib/paladin.gob"
+
+// IAMUserMap is a map of users with their names as keys.
+type IAMUserMap map[string]*IAMUser
+
 // LinuxController carries Linux users and provides ways to interact with them.
 // Not safe to use by multiple goroutines.
 // TODO: improve/move storage
 type LinuxController struct {
-	users      map[string]*IAMUser
+	users      IAMUserMap
 	cmdAdduser func(name string) error
 }
 
@@ -26,7 +33,7 @@ type LinuxController struct {
 // It also tries to turn on sudo for members of the wheel group.
 func NewLinuxController() *LinuxController {
 	lc := &LinuxController{
-		users: make(map[string]*IAMUser),
+		users: make(IAMUserMap),
 	}
 
 	b, err := ioutil.ReadFile("/etc/sudoers")
@@ -61,6 +68,7 @@ func NewLinuxController() *LinuxController {
 		}
 	}
 
+	lc.loadUsers()
 	return lc
 }
 
@@ -78,7 +86,6 @@ func (r *LinuxController) addUser(user *IAMUser) error {
 	}
 
 	r.users[user.Name] = user
-
 	log.Printf("added user %s to access control\n", user.Name)
 	return nil
 }
@@ -94,8 +101,34 @@ func (r *LinuxController) removeUser(user *IAMUser) error {
 	}
 
 	delete(r.users, user.Name)
-
 	log.Printf("removed user %s from access control\n", user.Name)
+	return nil
+}
+
+func (r *LinuxController) dumpUsers() {
+	fp, err := os.OpenFile(UsersGobPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		log.Fatalf("unable to open file %s: %v", UsersGobPath, err)
+	}
+	defer fp.Close()
+
+	enc := gob.NewEncoder(fp)
+	if err := enc.Encode(r.users); err != nil {
+		log.Fatalf("unable to encode users to gobs: %v", err)
+	}
+}
+
+func (r *LinuxController) loadUsers() error {
+	fp, err := os.Open(UsersGobPath)
+	if err != nil {
+		return err
+	}
+	defer fp.Close()
+
+	dec := gob.NewDecoder(fp)
+	if err := dec.Decode(&r.users); err != nil {
+		log.Fatalf("unable to decode users from gobs: %v", err)
+	}
 	return nil
 }
 
@@ -103,6 +136,7 @@ func (r *LinuxController) removeUser(user *IAMUser) error {
 // adds/removes/updates them accordingly.
 func (r *LinuxController) ApplyUsers(users []*IAMUser) error {
 	userMap := make(map[string]*IAMUser)
+
 	for _, u := range users {
 		userMap[u.Name] = u
 		if _, ok := r.users[u.Name]; !ok {
@@ -126,6 +160,7 @@ func (r *LinuxController) ApplyUsers(users []*IAMUser) error {
 		}
 	}
 
+	r.dumpUsers()
 	return nil
 }
 
