@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"os/user"
 	"syscall"
 	"time"
 
@@ -27,6 +28,7 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
+	mustBeRoot()
 
 	ctrl := NewLinuxController()
 	sess := session.Must(session.NewSession())
@@ -46,5 +48,16 @@ func main() {
 			}
 			ctrl.ApplyUsers(users)
 		}
+	}
+}
+
+func mustBeRoot() {
+	cur, err := user.Current()
+	if err != nil {
+		log.Fatal("unable to get current user")
+	}
+
+	if cur.Name != "root" {
+		log.Fatal("paladin is not root")
 	}
 }
