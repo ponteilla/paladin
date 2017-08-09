@@ -42,7 +42,7 @@ func main() {
 		case <-tick:
 			users, err := dir.ListGroupUsers(groupName)
 			if err != nil {
-				log.Fatalf("unable to list group users: %v\n", err)
+				log.Fatalf("unable to list group users: %v", err)
 			}
 			ctrl.ApplyUsers(users)
 		}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	osuser "os/user"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,7 +26,7 @@ type IAMUserMap map[string]*IAMUser
 // TODO: improve/move storage
 type LinuxController struct {
 	users      IAMUserMap
-	cmdAdduser func(name string) error
+	cmdAddUser func(name string) error
 }
 
 // NewLinuxController returns a Linux controller to manage users.
@@ -57,12 +57,12 @@ func NewLinuxController() *LinuxController {
 	}
 
 	if strings.Contains(string(b), "ubuntu") {
-		lc.cmdAdduser = func(name string) error {
+		lc.cmdAddUser = func(name string) error {
 			cmd := exec.Command("adduser", "--disabled-password", "-G", "wheel", name)
 			return cmd.Run()
 		}
 	} else {
-		lc.cmdAdduser = func(name string) error {
+		lc.cmdAddUser = func(name string) error {
 			cmd := exec.Command("adduser", "-G", "wheel", name)
 			return cmd.Run()
 		}
@@ -77,7 +77,7 @@ func (r *LinuxController) addUser(user *IAMUser) error {
 		return errors.New("user already exists")
 	}
 
-	if err := r.cmdAdduser(user.Name); err != nil {
+	if err := r.cmdAddUser(user.Name); err != nil {
 		return err
 	}
 
@@ -86,7 +86,6 @@ func (r *LinuxController) addUser(user *IAMUser) error {
 	}
 
 	r.users[user.Name] = user
-	log.Printf("added user %s to access control\n", user.Name)
 	return nil
 }
 
@@ -101,7 +100,6 @@ func (r *LinuxController) removeUser(user *IAMUser) error {
 	}
 
 	delete(r.users, user.Name)
-	log.Printf("removed user %s from access control\n", user.Name)
 	return nil
 }
 
@@ -134,34 +132,37 @@ func (r *LinuxController) loadUsers() error {
 
 // ApplyUsers compares the input users with what is has in memory and
 // adds/removes/updates them accordingly.
-func (r *LinuxController) ApplyUsers(users []*IAMUser) error {
+func (r *LinuxController) ApplyUsers(users []*IAMUser) {
 	userMap := make(map[string]*IAMUser)
 
 	for _, u := range users {
 		userMap[u.Name] = u
 		if _, ok := r.users[u.Name]; !ok {
 			if err := r.addUser(u); err != nil {
-				log.Fatalf("unable to add user %s: %v\n", u.Name, err)
+				log.Fatalf("unable to add user %s: %v", u.Name, err)
 			}
+			log.Printf("added user: %s", u.Name)
+			continue
+		}
 
-			if bytes.Compare(r.users[u.Name].SKHash, u.SKHash) != 0 {
-				if err := writeUserSSHKeys(u); err != nil {
-					log.Fatalf("unable to amend user %s ssh keys: %v", u.Name, err)
-				}
+		if !reflect.DeepEqual(r.users[u.Name].SSHKeys, u.SSHKeys) {
+			if err := writeUserSSHKeys(u); err != nil {
+				log.Fatalf("unable to amend user %s ssh keys: %v", u.Name, err)
 			}
+			log.Printf("updated user: %s", u.Name)
 		}
 	}
 
 	for n, u := range r.users {
 		if _, ok := userMap[n]; !ok {
 			if err := r.removeUser(u); err != nil {
-				log.Fatalf("unable to remove user %s: %v\n", u.Name, err)
+				log.Fatalf("unable to remove user %s: %v", u.Name, err)
 			}
+			log.Printf("removed user: %s", u.Name)
 		}
 	}
 
 	r.dumpUsers()
-	return nil
 }
 
 func writeUserSSHKeys(user *IAMUser) error {
@@ -184,6 +185,7 @@ func writeUserSSHKeys(user *IAMUser) error {
 
 	for _, key := range user.SSHKeys {
 		fp.Write(key)
+		fp.WriteString("\n")
 	}
 
 	uid, _ := strconv.Atoi(lUser.Uid)
