@@ -1,4 +1,6 @@
-package main
+// +build linux darwin
+
+package os
 
 import (
 	"encoding/gob"
@@ -13,27 +15,26 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/ponteilla/paladin/directory"
 )
 
 // UsersGobPath is the path at which to store users.
 const UsersGobPath = "/var/lib/paladin.gob"
 
-// IAMUserMap is a map of users with their names as keys.
-type IAMUserMap map[string]*IAMUser
-
-// LinuxController carries Linux users and provides ways to interact with them.
+// Controller carries Linux users and provides ways to interact with them.
 // Not safe to use by multiple goroutines.
 // TODO: improve/move storage
-type LinuxController struct {
-	users      IAMUserMap
+type Controller struct {
+	users      map[string]directory.User
 	cmdAddUser func(name string) error
 }
 
-// NewLinuxController returns a Linux controller to manage users.
+// NewOSController returns a Linux controller to manage users.
 // It also tries to turn on sudo for members of the wheel group.
-func NewLinuxController() *LinuxController {
-	lc := &LinuxController{
-		users: make(IAMUserMap),
+func NewOSController() ControllerInterface {
+	lc := &Controller{
+		users: make(map[string]directory.User),
 	}
 
 	b, err := ioutil.ReadFile("/etc/sudoers")
@@ -59,12 +60,23 @@ func NewLinuxController() *LinuxController {
 	if strings.Contains(string(b), "ubuntu") {
 		lc.cmdAddUser = func(name string) error {
 			cmd := exec.Command("adduser", "--disabled-password", "-G", "wheel", name)
-			return cmd.Run()
+			_, err := cmd.Output()
+			if err != nil {
+				return err
+			}
+
+			return nil
 		}
 	} else {
 		lc.cmdAddUser = func(name string) error {
-			cmd := exec.Command("adduser", "-G", "wheel", name)
-			return cmd.Run()
+			cmd := exec.Command("useradd", "-G", "wheel", name)
+
+			_, err := cmd.Output()
+			if err != nil {
+				return err
+			}
+
+			return nil
 		}
 	}
 
@@ -72,12 +84,12 @@ func NewLinuxController() *LinuxController {
 	return lc
 }
 
-func (r *LinuxController) addUser(user *IAMUser) error {
-	if _, ok := r.users[user.Name]; ok {
+func (r *Controller) addUser(user directory.User) error {
+	if _, ok := r.users[user.ID()]; ok {
 		return errors.New("user already exists")
 	}
 
-	if err := r.cmdAddUser(user.Name); err != nil {
+	if err := r.cmdAddUser(user.ID()); err != nil {
 		return err
 	}
 
@@ -85,38 +97,42 @@ func (r *LinuxController) addUser(user *IAMUser) error {
 		return err
 	}
 
-	r.users[user.Name] = user
+	r.users[user.ID()] = user
 	return nil
 }
 
-func (r *LinuxController) removeUser(user *IAMUser) error {
-	if _, ok := r.users[user.Name]; !ok {
+func (r *Controller) removeUser(user directory.User) error {
+	if _, ok := r.users[user.ID()]; !ok {
 		return errors.New("user does not exist")
 	}
 
-	cmd := exec.Command("userdel", "--remove", user.Name)
+	cmd := exec.Command("userdel", "--remove", user.ID())
 	if err := cmd.Run(); err != nil {
 		return err
 	}
 
-	delete(r.users, user.Name)
+	delete(r.users, user.ID())
 	return nil
 }
 
-func (r *LinuxController) dumpUsers() {
+func (r *Controller) dumpUsers() error {
 	fp, err := os.OpenFile(UsersGobPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
-		log.Fatalf("unable to open file %s: %v", UsersGobPath, err)
+		// log.Fatalf("unable to open file %s: %v", UsersGobPath, err)
+		return err
 	}
 	defer fp.Close()
 
 	enc := gob.NewEncoder(fp)
 	if err := enc.Encode(r.users); err != nil {
-		log.Fatalf("unable to encode users to gobs: %v", err)
+		// log.Fatalf("unable to encode users to gobs: %v", err)
+		return err
 	}
+
+	return nil
 }
 
-func (r *LinuxController) loadUsers() error {
+func (r *Controller) loadUsers() error {
 	fp, err := os.Open(UsersGobPath)
 	if err != nil {
 		return err
@@ -132,41 +148,46 @@ func (r *LinuxController) loadUsers() error {
 
 // ApplyUsers compares the input users with what is has in memory and
 // adds/removes/updates them accordingly.
-func (r *LinuxController) ApplyUsers(users []*IAMUser) {
-	userMap := make(map[string]*IAMUser)
+func (r *Controller) ApplyUsers(users []directory.User) error {
+	diff := make(map[string]directory.User)
 
 	for _, u := range users {
-		userMap[u.Name] = u
-		if _, ok := r.users[u.Name]; !ok {
+		diff[u.ID()] = u
+		if _, ok := r.users[u.ID()]; !ok {
 			if err := r.addUser(u); err != nil {
-				log.Fatalf("unable to add user %s: %v", u.Name, err)
+				log.Fatalf("unable to add user %s: %v", u.ID(), err)
+				// return err
 			}
-			log.Printf("added user: %s", u.Name)
+			log.Printf("added user: %s", u.ID())
 			continue
 		}
 
-		if !reflect.DeepEqual(r.users[u.Name].SSHKeys, u.SSHKeys) {
+		if !reflect.DeepEqual(r.users[u.ID()].SSHKeys(), u.SSHKeys()) {
 			if err := writeUserSSHKeys(u); err != nil {
-				log.Fatalf("unable to amend user %s ssh keys: %v", u.Name, err)
+				log.Fatalf("unable to amend user %s ssh keys: %v", u.ID(), err)
+				// return err
 			}
-			log.Printf("updated user: %s", u.Name)
+			log.Printf("updated user: %s", u.ID())
 		}
 	}
 
 	for n, u := range r.users {
-		if _, ok := userMap[n]; !ok {
+		if _, ok := diff[n]; !ok {
 			if err := r.removeUser(u); err != nil {
-				log.Fatalf("unable to remove user %s: %v", u.Name, err)
+				log.Fatalf("unable to remove user %s: %v", u.ID(), err)
+				// return err
 			}
-			log.Printf("removed user: %s", u.Name)
+			log.Printf("removed user: %s", u.ID())
 		}
 	}
 
 	r.dumpUsers()
+
+	return nil
 }
 
-func writeUserSSHKeys(user *IAMUser) error {
-	lUser, err := osuser.Lookup(user.Name)
+func writeUserSSHKeys(user directory.User) error {
+	lUser, err := osuser.Lookup(user.ID())
 	if err != nil {
 		return err
 	}
@@ -183,7 +204,7 @@ func writeUserSSHKeys(user *IAMUser) error {
 	}
 	defer fp.Close()
 
-	for _, key := range user.SSHKeys {
+	for _, key := range user.SSHKeys() {
 		fp.Write(key)
 		fp.WriteString("\n")
 	}

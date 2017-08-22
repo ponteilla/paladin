@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/ponteilla/paladin/directory/aws"
+	ospkg "github.com/ponteilla/paladin/os"
 )
 
 var (
@@ -30,9 +32,9 @@ func main() {
 	}
 	mustBeRoot()
 
-	ctrl := NewLinuxController()
+	ctrl := ospkg.NewOSController()
 	sess := session.Must(session.NewSession())
-	dir := NewIAM(sess)
+	dir := aws.NewDirectory(sess)
 
 	ch := make(chan os.Signal)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)

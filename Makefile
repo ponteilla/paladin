@@ -1,6 +1,7 @@
 .PHONY: default deps docker-build
 
 pkg = $(shell go list)
+pkgs = $(shell go list ./... | grep -v /vendor/)
 
 default: deps docker-build
 
