@@ -25,24 +25,35 @@ func NewDirectory(sess *session.Session) directory.Directory {
 }
 
 // ListGroupUsers returns users of an IAM group.
-func (d *Directory) ListGroupUsers(groupName string) ([]directory.User, error) {
-	var users []directory.User
+func (d *Directory) ListGroupUsers(groupNames ...string) ([]directory.User, error) {
+	var (
+		users []directory.User
+		arnM  map[string]struct{}
+	)
 
-	ggInput := &iam.GetGroupInput{
-		GroupName: aws.String(groupName),
-	}
-	ggOutput, err := d.IAMAPI.GetGroup(ggInput)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, u := range ggOutput.Users {
-		a, err := userFromARN(d, *u.UserName)
-		if err != nil {
-			log.Printf("skipping user %s: %v", *u.UserName, err)
-			continue
+	for _, groupName := range groupNames {
+		ggInput := &iam.GetGroupInput{
+			GroupName: aws.String(groupName),
 		}
-		users = append(users, a)
+		ggOutput, err := d.IAMAPI.GetGroup(ggInput)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, u := range ggOutput.Users {
+			if _, ok := arnM[*u.Arn]; ok {
+				continue
+			}
+
+			a, err := userFromARN(d, *u.UserName)
+			if err != nil {
+				log.Printf("skipping user %s: %v", *u.UserName, err)
+				continue
+			}
+
+			users = append(users, a)
+			arnM[*u.Arn] = struct{}{}
+		}
 	}
 
 	return users, nil

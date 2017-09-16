@@ -1,5 +1,5 @@
 package directory
 
 type Directory interface {
-	ListGroupUsers(groupName string) ([]User, error)
+	ListGroupUsers(groupNames ...string) ([]User, error)
 }
